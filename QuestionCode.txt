@@ -1,5 +1,100 @@
-  
+Polymorphic data models that save data to MySQL and restore data from MySQL
+
+This is a follow up question to [Inserting and retrieving data MySql Database access in C++ using Boost::ASIO and Boost::MySQL](https://codereview.stackexchange.com/questions/297855/inserting-and-retrieving-data-mysql-database-access-in-c-using-boostasio-and). I have reduced the amount of code to be reviewed by presenting only one of the models being tested by the unit test, and non of the unit testing code. I would really like this code reviewed, and I will be posting a bounty.  
+
+This question is also related to [C++ Date Model to be used within models in an MVVM application](https://codereview.stackexchange.com/questions/296122/c-date-model-to-be-used-within-models-in-an-mvvm-application). The dates in the Task Model presented below are what I was trying to implement in that question. I moved from Ubuntu 22.04 to 24.04 to get the necessary changes in g++-14 (Ubuntu 22.04 was limited to g++-12).
+
+The program is testing the database interface for a project planning and personal scheduling system I am planning on developing.  
+
+All of the necessary tables are created by PlannerTaskScheduleDB.sql, only 2 of the models are currently implemented and being tested, but they are the 2 most complex models.  
+
+# New Design
+The models and database interface have been completely restructured from the previous version. The previous version attempted to keep the models and the database interface separate, in this version the model contains the database interface. This allowed a lot of the boiler plate database access code to be reduced.  
+
+Why `ListDBInterface.h`? It didn't seem proper for a model to return a list of that model.  
+
+# My Concerns  
+ 1. Is the code maintainable? Could you take over coding this project, or part of this project?  
+ 2. Are the object partitioned well? Are there any dependencies between objects that could be a problem?  
+ 3. Performance, the primary concern is run time efficiency. The unit tests runs in .5 seconds, the valgrind test takes about 6 seconds.  
+ 4. DRY code, is there any code that repeats that can be reduced.  
+ 5. Code Complexity.  
+ 6. Code reduction, each model will add a minimum of 300 lines of code and up to a 1000 lines of code, are there any modern C++ features I can use to reduce this?  
+ 7. Is any part of this a bad object oriented design?
+ 8. `ListDBInterface.h` is only my second attempt at writing a template class, what are the problems with it?
+
+## Test run using valgrind
+
+```
+Memcheck, a memory error detector
+Copyright (C) 2002-2022, and GNU GPL'd, by Julian Seward et al.
+Using Valgrind-3.22.0 and LibVEX; rerun with -h for copyright info
+
+
+All positive path tests for database insertions and retrievals of user PASSED!
+All negative path tests for database insertions and retrievals of user PASSED!
+All tests for database insertions and retrievals of user PASSED!
+All positive path tests for database insertions and retrievals of task PASSED!
+All negative path tests for database insertions and retrievals of task PASSED!
+All tests for database insertions and retrievals of task PASSED!
+All tests Passed
+
+HEAP SUMMARY:
+    in use at exit: 0 bytes in 0 blocks
+  total heap usage: 34,823 allocs, 34,823 frees, 4,404,863 bytes allocated
+
+All heap blocks were freed -- no leaks are possible
+
+For lists of detected and suppressed errors, rerun with: -s
+ERROR SUMMARY: 0 errors from 0 contexts (suppressed: 112 from 13)
+```
+
+The suppressed errors are checks for valid data in the model before inserting the model data into the database, they are caused by checking `std::chrono::year_day_model::ok(()` on uninitialized `std::chrono::year_day_model` variables in the TaskModel.
+
+# Development Environment
+
+- Ubuntu 24.04
+- g++ 14
+- CMake 4.01
+- Boost 1.88  
+- MariaDB Ver 15.1 Distrib 10.11.13-MariaDB  
+- Visual Studio Code
+
+
 # The Code
+
+The [GitHub](https://github.com/pacmaninbw/CR_Question_New_Model_arch) repository contains the entire program including the other models being tested. This repository was created specifically for this code review question. The actual [development repository](https://github.com/pacmaninbw/CCTaskManagementAndScheduler).  
+
+If you are running Ubuntu 24.04 with g++14 you can build it. If you have MariaDB or MySQL installed you should be able to run the program if you so desire.  
+
+## Shell file that runs the unit test  
+
+After every edit I run the following to perform regression testing prior to checking the files into git.  
+
+```
+#!/bin/bash
+mysql -u MySQLUser -p < PlannerTaskScheduleDB.sql
+protoPersonalPlanner -u MySQLUser -p MySQLPassword >& UnitTests/testOut.txt
+mysql -u MySQLUser -p < PlannerTaskScheduleDB.sql
+valgrind --track-origins=yes --suppressions=UnitTests/unitTestValgrindSuppressExpectedErrors.supp  protoPersonalPlanner -u MySQLUser -p MySQLPassword  2>&1 | sed 's/^==[0-9]*== //' > UnitTests/valgrindOut.txt
+echo "Diff"
+diff UnitTests/testOut.txt UnitTests/testOut_forDiff.txt
+echo "valgrind Diff"
+diff UnitTests/valgrindOut.txt UnitTests/valgrindOut_forDiff.txt
+```
+
+> paulc> wc Core* List* Model* Task*
+>   116   187  2825 CoreDBInterface.cpp
+>    42    93  1233 CoreDBInterface.h
+>    99   303  3030 ListDBInterface.h
+>   203   351  4317 ModelDBInterface.cpp
+>   118   313  3804 ModelDBInterface.h
+>   125   186  3000 TaskList.cpp
+>    31    55   837 TaskList.h
+>   561  1200 17511 TaskModel.cpp
+>   229   841 10450 TaskModel.h
+>  1524  3529 47007 total  
+
 
 ## CoreDBInterface.h  
 
@@ -165,7 +260,7 @@ NSBA::awaitable<NSBM::format_options> CoreDBInterface::coRoutineGetFormatOptions
 }
 ```
 
-##  ListDBInterface.h
+##  ListDBInterface.h  
 
 ```
 #ifndef LISTDBINTERFACECORE_H_
@@ -267,7 +362,7 @@ protected:
 #endif // LISTDBINTERFACECORE_H_
 ```
 
-## ModelDBInterface.h
+## ModelDBInterface.h  
 
 ```
 #ifndef MODELDBINTERFACECORE_H_
@@ -388,7 +483,7 @@ protected:
 #endif // MODELDBINTERFACECORE_H_
 ```
 
-## ModelDBInterface.cpp
+## ModelDBInterface.cpp  
 
 ```
 #include <boost/asio.hpp>
@@ -594,7 +689,7 @@ std::string ModelDBInterface::implodeTextField(std::vector<std::string> &fields)
 }
 ```
 
-## TaskModel.h
+## TaskModel.h  
 
 ```
 #ifndef TASKMODEL_H_
@@ -826,7 +921,7 @@ using TaskModel_shp = std::shared_ptr<TaskModel>;
 #endif // TASKMODEL_H_
 ```
 
-## TaskModel.cpp
+## TaskModel.cpp  
 
 ```
 #include <chrono>
@@ -1426,7 +1521,7 @@ private:
 #endif // TASKLIST_H_
 ```
 
-## TaskList.cpp
+## TaskList.cpp  
 
 ```
 #include <chrono>
