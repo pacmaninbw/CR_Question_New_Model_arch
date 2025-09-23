@@ -1,0 +1,1371 @@
+Unit Test for Polymorphic data models that save data to MySQL
+
+As noted by [@TobySpeight](https://codereview.stackexchange.com/questions/298180/polymorphic-data-models-that-save-data-to-mysql-and-restore-data-from-mysql/298201#298201) in their answer to `Polymorphic data models that save data to MySQL and restore data from MySQL` the test code should also be reviewed. Their suggestion for automating the build to include the test makes some sense as well, and I will look into it. Currently the test program does fail if tests fail, but the shell scripts don't check for the failure.  
+
+Since there are over 1200 line of code I will be posting a bounty for this question as well.
+
+The code in `CSVReader.h` is copied from the [top answer to the stack overflow question](https://stackoverflow.com/questions/1120140/how-can-i-read-and-parse-csv-files-in-c)
+I claim no ownership of this code. I made 2 minor changes to the code. The code was written by [Loki Astari ](https://codereview.stackexchange.com/users/507/loki-astari), another valued member of the Code Review community.  
+
+# My Concerns  
+ - Is the code maintainable? Could you take over coding this project, or part of this project?  
+ - Performance, the primary concern is run time efficiency. The unit tests runs in .5 seconds, the valgrind test takes about 6 seconds.  
+ - DRY code, is there any code that repeats that can be reduced.   - 
+ - Code Complexity.  
+ - Code reduction are there any modern C++ features I can use to reduce this?  
+
+## Test run using valgrind
+
+```none
+Memcheck, a memory error detector
+Copyright (C) 2002-2022, and GNU GPL'd, by Julian Seward et al.
+Using Valgrind-3.22.0 and LibVEX; rerun with -h for copyright info
+
+
+All positive path tests for database insertions and retrievals of user PASSED!
+All negative path tests for database insertions and retrievals of user PASSED!
+All tests for database insertions and retrievals of user PASSED!
+All positive path tests for database insertions and retrievals of task PASSED!
+All negative path tests for database insertions and retrievals of task PASSED!
+All tests for database insertions and retrievals of task PASSED!
+All tests Passed
+
+HEAP SUMMARY:
+    in use at exit: 0 bytes in 0 blocks
+  total heap usage: 34,823 allocs, 34,823 frees, 4,404,863 bytes allocated
+
+All heap blocks were freed -- no leaks are possible
+
+For lists of detected and suppressed errors, rerun with: -s
+ERROR SUMMARY: 0 errors from 0 contexts (suppressed: 112 from 13)
+```
+
+
+The suppressed errors are checks for valid data in the model before inserting the model data into the database, they are caused by checking `std::chrono::year_day_model::ok(()` on uninitialized `std::chrono::year_day_model` variables in the TaskModel.
+
+# Development Environment  
+ - Ubuntu 24.04  
+ - g++ 14  
+ - CMake 4.01  
+ - Boost 1.88  
+ - MariaDB Ver 15.1 Distrib 10.11.13-MariaDB  
+ - Visual Studio Code  
+
+# The Code
+
+This [GitHub repository](https://github.com/pacmaninbw/CR_Question_New_Model_arch) contains the code for this question and the previous question. It will not be changing. The [branch on the development directory] where I am working that contains this code is [preTaskCodeReview](https://github.com/pacmaninbw/CCTaskManagementAndScheduler/tree/preTaskCodeReview/Development/Prototypes/MergeModelDB). Please note that the development directory does not contain the shell script listed below, only the code review repository does.
+
+```none
+paulc> wc UnitTests/Test* main.cpp
+  141   303  3811 UnitTests/TestDBInterfaceCore.cpp
+   42   101  1881 UnitTests/TestDBInterfaceCore.h
+  592  1330 19699 UnitTests/TestTaskDBInterface.cpp
+   47   100  1844 UnitTests/TestTaskDBInterface.h
+  337   816 11250 UnitTests/TestUserDBInterface.cpp
+   37    71  1314 UnitTests/TestUserDBInterface.h
+   56   147  1651 main.cpp
+ 1252  2868 41450 total
+```
+
+If you are running Ubuntu 24.04 with g++14 you can build it. If you have MariaDB or MySQL installed you should be able to run the program if you so desire. You will need to replace the   
+
+## Shell file that runs the unit test  
+
+After every edit I run the following to perform regression testing prior to checking the files into git.  
+
+```bash
+#!/bin/bash
+mysql -u MySQLUser -p < PlannerTaskScheduleDB.sql
+protoPersonalPlanner -u MySQLUser -p MySQLPassword >& UnitTests/testOut.txt
+mysql -u MySQLUser -p < PlannerTaskScheduleDB.sql
+valgrind --track-origins=yes --suppressions=UnitTests/unitTestValgrindSuppressExpectedErrors.supp  protoPersonalPlanner -u MySQLUser -p MySQLPassword  2>&1 | sed 's/^==[0-9]*== //' > UnitTests/valgrindOut.txt
+echo "Diff"
+diff UnitTests/testOut.txt UnitTests/testOut_forDiff.txt
+echo "valgrind Diff"
+diff UnitTests/valgrindOut.txt UnitTests/valgrindOut_forDiff.txt
+```
+
+## TestDBInterfaceCore.h  
+
+```c++
+#ifndef TESTDBINTERFACECORE_H_
+#define TESTDBINTERFACECORE_H_
+
+#include "ModelDBInterface.h"
+#include <functional>
+#include <memory>
+#include <string>
+#include <string_view>
+#include <vector>
+
+class TestDBInterfaceCore
+{
+public:
+    enum class TestStatus {TestPassed, TestFailed};
+    TestDBInterfaceCore(bool isVerboseOutput, std::string_view modelName);
+    virtual ~TestDBInterfaceCore() = default;
+    virtual TestDBInterfaceCore::TestStatus runAllTests();
+    virtual TestDBInterfaceCore::TestStatus runNegativePathTests();
+    virtual TestDBInterfaceCore::TestStatus runPositivePathTests();
+
+protected:
+    TestDBInterfaceCore::TestStatus wrongErrorMessage(std::string expectedString, ModelDBInterface* modelUnderTest);
+    bool hasErrorMessage(ModelDBInterface* modelUnderTest);
+    TestDBInterfaceCore::TestStatus testInsertionFailureMessages(
+        ModelDBInterface* modelUnderTest, std::vector<std::string> expectedErrors);
+    TestDBInterfaceCore::TestStatus testInsertionFailureMessages(
+        std::shared_ptr<ModelDBInterface>modelUnderTest, std::vector<std::string> expectedErrors) {
+            ModelDBInterface* ptr = modelUnderTest.get();
+            return testInsertionFailureMessages(ptr, expectedErrors);
+        };
+    void reportTestStatus(TestDBInterfaceCore::TestStatus status, std::string_view path);
+
+    const TestDBInterfaceCore::TestStatus TESTFAILED = TestDBInterfaceCore::TestStatus::TestFailed;
+    const TestDBInterfaceCore::TestStatus TESTPASSED = TestDBInterfaceCore::TestStatus::TestPassed;
+
+//    BoostDBInterfaceCore* dbInterfaceUnderTest; 
+    bool verboseOutput;
+    std::string_view modelUnderTest;
+    std::vector<std::function<TestDBInterfaceCore::TestStatus(void)>> negativePathTestFuncsNoArgs;
+    std::vector<std::function<TestDBInterfaceCore::TestStatus(void)>> positiviePathTestFuncsNoArgs;
+};
+
+#endif  // TESTDBINTERFACECORE_H_#include <format>
+```
+
+## TestDBInterfaceCore.cpp
+
+```c++
+#include <functional>
+#include <iostream>
+#include <memory>
+#include <string>
+#include <string_view>
+#include "TestDBInterfaceCore.h"
+#include <vector>
+
+TestDBInterfaceCore::TestDBInterfaceCore(
+    bool isVerboseOutput, std::string_view modelName)
+: verboseOutput{isVerboseOutput}, modelUnderTest{modelName}
+{
+}
+
+TestDBInterfaceCore::TestStatus TestDBInterfaceCore::runAllTests()
+{
+    TestDBInterfaceCore::TestStatus positivePathPassed = runPositivePathTests();
+    TestDBInterfaceCore::TestStatus negativePathPassed = runNegativePathTests();
+    
+    TestDBInterfaceCore::TestStatus allTestsStatus =
+        (positivePathPassed == TESTPASSED && negativePathPassed == TESTPASSED) ? TESTPASSED : TESTFAILED;
+
+    reportTestStatus(allTestsStatus, "");
+
+    return allTestsStatus;
+}
+
+TestDBInterfaceCore::TestStatus TestDBInterfaceCore::runNegativePathTests()
+{
+    TestDBInterfaceCore::TestStatus allTestPassed = TESTPASSED;
+
+    for (auto test: negativePathTestFuncsNoArgs)
+    {
+        TestDBInterfaceCore::TestStatus testResult = test();
+        if (allTestPassed == TESTPASSED)
+        {
+            allTestPassed = testResult;
+        }
+    }
+
+    reportTestStatus(allTestPassed, "negative");
+
+    return allTestPassed;
+}
+
+TestDBInterfaceCore::TestStatus TestDBInterfaceCore::runPositivePathTests()
+{
+    TestDBInterfaceCore::TestStatus allTestPassed = TESTPASSED;
+
+    for (auto test: positiviePathTestFuncsNoArgs)
+    {
+        TestDBInterfaceCore::TestStatus testResult = test();
+        if (allTestPassed == TESTPASSED)
+        {
+            allTestPassed = testResult;
+        }
+    }
+
+    reportTestStatus(allTestPassed, "positive");
+
+    return allTestPassed;
+}
+
+/*
+ * Protected methods.
+ */
+TestDBInterfaceCore::TestStatus TestDBInterfaceCore::wrongErrorMessage(std::string expectedString, ModelDBInterface* modelUnderTest)
+{
+    std::string errorMessage = modelUnderTest->getAllErrorMessages();
+    std::size_t found = errorMessage.find(expectedString);
+    if (found == std::string::npos)
+    {
+        std::clog << "Wrong message generated! TEST FAILED!\n";
+        std::clog << errorMessage << "\n";
+        return TESTFAILED;
+    }
+
+    return TESTPASSED;
+}
+
+bool TestDBInterfaceCore::hasErrorMessage(ModelDBInterface* modelUnderTest)
+{
+    std::string errorMessage = modelUnderTest->getAllErrorMessages();
+
+    if (errorMessage.empty())
+    {
+        std::clog << "No error message generated! TEST FAILED!\n";
+        return false;
+    }
+
+    if (verboseOutput)
+    {
+        std::clog << "Expected error was; " << errorMessage << "\n";
+    }
+
+    return true;
+}
+
+TestDBInterfaceCore::TestStatus TestDBInterfaceCore::testInsertionFailureMessages(ModelDBInterface* modelUnderTest, std::vector<std::string> expectedErrors)
+{
+    if (modelUnderTest->insert())
+    {
+        std::clog << std::format("Inserted {} missing required fields!  TEST FAILED\n", modelUnderTest->getModelName());
+        return TESTFAILED;
+    }
+
+    if (!hasErrorMessage(modelUnderTest))
+    {
+        return TESTFAILED;
+    }
+
+    for (auto expectedError: expectedErrors)
+    {
+        if (wrongErrorMessage(expectedError, modelUnderTest) == TESTFAILED)
+        {
+            return TESTFAILED;
+        }
+    }
+
+    return TESTPASSED;
+}
+
+void TestDBInterfaceCore::reportTestStatus(TestDBInterfaceCore::TestStatus status, std::string_view path)
+{
+    std::string_view statusStr = status == TESTPASSED? "PASSED" : "FAILED";
+
+    if (path.length() > 0)
+    {
+        std::clog << std::format(
+            "All {} path tests for database insertions and retrievals of {} {}!\n",
+            path, modelUnderTest, statusStr);
+    }
+    else
+    {
+        std::clog << std::format(
+            "All tests for database insertions and retrievals of {} {}!\n",
+            modelUnderTest, statusStr);
+
+    }
+}
+```
+
+## TestTaskDBInterface.h
+
+```c++
+#ifndef TESTTASKDBINTERFACE_H_
+#define TESTTASKDBINTERFACE_H_
+
+#include <chrono>
+#include "CSVReader.h"
+#include <functional>
+#include <string>
+#include "TaskList.h"
+#include "TaskModel.h"
+#include "TestDBInterfaceCore.h"
+#include "UserModel.h"
+#include <vector>
+class TestTaskDBInterface : public TestDBInterfaceCore
+{
+public:
+    TestTaskDBInterface(std::string taskFileName);
+    ~TestTaskDBInterface() = default;
+    virtual TestDBInterfaceCore::TestStatus runAllTests() override;
+
+private:
+    bool testGetTaskByDescription(TaskModel_shp task);
+    bool testGetTaskByID(TaskModel_shp task);
+    TaskListValues loadTasksFromDataFile();
+    void commonTaskInit(TaskModel_shp newTask, CSVRow taskData);
+    TaskModel_shp creatOddTask(CSVRow taskData);
+    TaskModel_shp creatEvenTask(CSVRow taskData);
+    TestDBInterfaceCore::TestStatus testGetUnstartedTasks();
+    TestDBInterfaceCore::TestStatus testGetActiveTasks();
+    TestDBInterfaceCore::TestStatus testTaskUpdates();
+    bool testTaskUpdate(TaskModel_shp changedTask);
+    bool testAddDepenedcies();
+    bool testGetCompletedList();
+    std::chrono::year_month_day stringToDate(std::string dateString);
+    TestDBInterfaceCore::TestStatus testnegativePathNotModified();
+    TestDBInterfaceCore::TestStatus testNegativePathAlreadyInDataBase();
+    TestDBInterfaceCore::TestStatus testMissingReuqiredField(TaskModel taskMissingFields);
+    TestDBInterfaceCore::TestStatus testNegativePathMissingRequiredFields();
+    TestDBInterfaceCore::TestStatus testTasksFromDataFile();
+    TestDBInterfaceCore::TestStatus testSharedPointerInteraction();
+    TestDBInterfaceCore::TestStatus insertShouldPass(TaskModel_shp newTask);
+
+    std::string dataFileName;
+    std::vector<std::function<bool(TaskModel_shp)>> positiveTestFuncs;
+    UserModel_shp userOne;
+};
+
+#endif // TESTTASKDBINTERFACE_H_
+```
+
+## TestTaskDBInterface.cpp
+
+```c++
+#include "CommandLineParser.h"
+#include "commonUtilities.h"
+#include "CSVReader.h"
+#include <exception>
+#include <functional>
+#include <iostream>
+#include <stdexcept>
+#include <string>
+#include "TestDBInterfaceCore.h"
+#include "TestTaskDBInterface.h"
+#include "TaskModel.h"
+#include "UserModel.h"
+#include <vector>
+
+TestTaskDBInterface::TestTaskDBInterface(std::string taskFileName)
+: TestDBInterfaceCore(programOptions.verboseOutput, "task")
+{
+    dataFileName = taskFileName;
+    positiveTestFuncs.push_back(std::bind(&TestTaskDBInterface::testGetTaskByID, this, std::placeholders::_1));
+    positiveTestFuncs.push_back(std::bind(&TestTaskDBInterface::testGetTaskByDescription, this, std::placeholders::_1));
+
+    positiviePathTestFuncsNoArgs.push_back(std::bind(&TestTaskDBInterface::testTasksFromDataFile, this));
+    positiviePathTestFuncsNoArgs.push_back(std::bind(&TestTaskDBInterface::testGetUnstartedTasks, this));
+    positiviePathTestFuncsNoArgs.push_back(std::bind(&TestTaskDBInterface::testTaskUpdates, this));
+    positiviePathTestFuncsNoArgs.push_back(std::bind(&TestTaskDBInterface::testGetActiveTasks, this));
+
+    negativePathTestFuncsNoArgs.push_back(std::bind(&TestTaskDBInterface::testNegativePathAlreadyInDataBase, this));
+    negativePathTestFuncsNoArgs.push_back(std::bind(&TestTaskDBInterface::testnegativePathNotModified, this));
+    negativePathTestFuncsNoArgs.push_back(std::bind(&TestTaskDBInterface::testNegativePathMissingRequiredFields, this));
+    negativePathTestFuncsNoArgs.push_back(std::bind(&TestTaskDBInterface::testSharedPointerInteraction, this));
+}
+
+TestDBInterfaceCore::TestStatus TestTaskDBInterface::runAllTests()
+{
+    userOne = std::make_shared<UserModel>();
+    userOne->setUserID(1);
+    userOne->retrieve();
+    if (!userOne->isInDataBase())
+    {
+        std::cerr << "Failed to retrieve userOne from DataBase!\n";
+        return TESTFAILED;
+    }
+
+    TestDBInterfaceCore::TestStatus positivePathPassed = runPositivePathTests();
+    TestDBInterfaceCore::TestStatus negativePathPassed = runNegativePathTests();
+
+    TestDBInterfaceCore::TestStatus allTestsStatus =
+        (positivePathPassed == TESTPASSED && negativePathPassed == TESTPASSED) ? TESTPASSED : TESTFAILED;
+
+    reportTestStatus(allTestsStatus, "");
+
+    return allTestsStatus;
+}
+
+bool TestTaskDBInterface::testGetTaskByDescription(TaskModel_shp insertedTask)
+{
+    TaskModel_shp retrievedTask = std::make_shared<TaskModel>();
+    if (retrievedTask->selectByDescriptionAndAssignedUser(insertedTask->getDescription(), userOne->getUserID()))
+    {
+        if (*retrievedTask == *insertedTask)
+        {
+            return true;
+        }
+        else
+        {
+            std::clog << "Inserted and retrieved Task are not the same! Test FAILED!\n";
+            if (verboseOutput)
+            {
+                std::clog << "Inserted Task:\n" << *insertedTask << "\n" "Retreived Task:\n" << *retrievedTask << "\n";
+            }
+            return false;
+        }
+    }
+    else
+    {
+        std::cerr << "getTaskByDescription(task.getDescription())) FAILED!\n" 
+            << retrievedTask->getAllErrorMessages() << "\n";
+        return false;
+    }
+}
+
+bool TestTaskDBInterface::testGetTaskByID(TaskModel_shp insertedTask)
+{
+    TaskModel_shp retrievedTask = std::make_shared<TaskModel>();
+    retrievedTask->setTaskID(insertedTask->getTaskID());
+    if (retrievedTask->retrieve())
+    {
+        if (*retrievedTask == *insertedTask)
+        {
+            return true;
+        }
+        else
+        {
+            std::clog << "Inserted and retrieved Task are not the same! Test FAILED!\n";
+            if (verboseOutput)
+            {
+                std::clog << "Inserted Task:\n" << *insertedTask << "\n" "Retreived Task:\n" << *retrievedTask << "\n";
+            }
+            return false;
+        }
+    }
+    else
+    {
+        std::cerr << "getTaskByDescription(task.getTaskByTaskID())) FAILED!\n" 
+            << retrievedTask->getAllErrorMessages() << "\n";
+        return false;
+    }
+}
+
+TaskListValues TestTaskDBInterface::loadTasksFromDataFile()
+{
+    std::size_t lCount = 0;
+    TaskListValues inputTaskData;
+
+    std::ifstream taskDataFile(dataFileName);
+    
+    for (auto row: CSVRange(taskDataFile))
+    {
+        // Try both constructors on an alternating basis.
+        TaskModel_shp testTask = (lCount & 0x000001)? creatOddTask(row) : creatEvenTask(row);
+        inputTaskData.push_back(testTask);
+        ++lCount;
+    }
+
+    return inputTaskData;
+}
+
+static constexpr std::size_t CSV_MajorPriorityColIdx = 0;
+static constexpr std::size_t CSV_MinorPriorityColIdx = 1;
+static constexpr std::size_t CSV_DescriptionColIdx = 2;
+static constexpr std::size_t CSV_RequiredByColIdx = 3;
+static constexpr std::size_t CSV_EstimatedEffortColIdx = 4;
+static constexpr std::size_t CSV_ActualEffortColIdx = 5;
+static constexpr std::size_t CSV_ParentTaskColIdx = 6;
+static constexpr std::size_t CSV_StatusColIdx = 7;
+static constexpr std::size_t CSV_ScheduledStartDateColIdx = 8;
+static constexpr std::size_t CSV_ActualStartDateColIdx = 9;
+static constexpr std::size_t CSV_CreatedDateColIdx = 10;
+static constexpr std::size_t CSV_DueDate2ColIdx = 11;
+static constexpr std::size_t CSV_EstimatedCompletionDateColIdx = 12;
+
+void TestTaskDBInterface::commonTaskInit(TaskModel_shp newTask, CSVRow taskData)
+{
+    // Required fields first.
+    newTask->setEstimatedEffort(std::stoi(taskData[CSV_EstimatedEffortColIdx]));
+    newTask->setActualEffortToDate(std::stod(taskData[CSV_ActualEffortColIdx]));
+    newTask->setDueDate(stringToDate(taskData[CSV_RequiredByColIdx]));
+    newTask->setScheduledStart(stringToDate(taskData[CSV_ScheduledStartDateColIdx]));
+    newTask->setStatus(taskData[CSV_StatusColIdx]);
+    newTask->setPriorityGroup(taskData[CSV_MajorPriorityColIdx][0]);
+    newTask->setPriority(std::stoi(taskData[CSV_MinorPriorityColIdx]));
+    newTask->setPercentageComplete(0.0);
+    newTask->setCreationDate(getTodaysDateMinus(5));
+
+    // Optional fields
+    if (!taskData[CSV_ParentTaskColIdx].empty())
+    {
+        newTask->setParentTaskID(std::stoi(taskData[CSV_ParentTaskColIdx]));
+    }
+
+    if (!taskData[CSV_ActualStartDateColIdx].empty())
+    {
+        newTask->setactualStartDate(stringToDate(taskData[CSV_ActualStartDateColIdx]));
+    }
+    
+    if (taskData.size() > CSV_EstimatedCompletionDateColIdx)
+    {
+        newTask->setEstimatedCompletion(stringToDate(taskData[CSV_EstimatedCompletionDateColIdx]));
+    }
+    
+    if (!taskData[CSV_CreatedDateColIdx].empty())
+    {
+        // Override the auto date creation with the actual creation date.
+        newTask->setCreationDate(stringToDate(taskData[CSV_CreatedDateColIdx]));
+    }
+}
+
+TaskModel_shp TestTaskDBInterface::creatOddTask(CSVRow taskData)
+{
+    TaskModel_shp newTask = std::make_shared<TaskModel>(userOne->getUserID(), taskData[CSV_DescriptionColIdx]);
+    commonTaskInit(newTask, taskData);
+
+    return newTask;
+}
+
+TaskModel_shp TestTaskDBInterface::creatEvenTask(CSVRow taskData)
+{
+    TaskModel_shp newTask = std::make_shared<TaskModel>(userOne->getUserID());
+    newTask->setDescription(taskData[CSV_DescriptionColIdx]);
+    commonTaskInit(newTask, taskData);
+
+    return newTask;
+}
+
+TestDBInterfaceCore::TestStatus TestTaskDBInterface::testGetUnstartedTasks()
+{
+    TaskList taskDBInteface;
+    TaskListValues notStartedList = taskDBInteface.getUnstartedDueForStartForAssignedUser(userOne->getUserID());
+    if (!notStartedList.empty())
+    {    
+        if (verboseOutput)
+        {
+            std::clog << std::format("Find unstarted tasks for user({}) PASSED!\n", userOne->getUserID());
+            std::clog << std::format("User {} has {} unstarted tasks\n",
+                userOne->getUserID(), notStartedList.size());
+            for (auto task: notStartedList)
+            {
+                std::clog << *task << "\n";
+            }
+        }
+        return TESTPASSED; 
+    }
+
+    std::cerr << std::format("taskDBInterface.getUnstartedDueForStartForAssignedUser({}) FAILED!\n", userOne->getUserID()) <<
+        taskDBInteface.getAllErrorMessages() << "\n";
+
+    return TESTFAILED;
+}
+
+TestDBInterfaceCore::TestStatus TestTaskDBInterface::testGetActiveTasks()
+{
+    TaskList taskDBInteface;
+    TaskListValues activeTasks = taskDBInteface.getActiveTasksForAssignedUser(userOne->getUserID());
+    if (!activeTasks.empty())
+    {    
+        if (verboseOutput)
+        {
+            std::clog << std::format("Find active tasks for user({}) PASSED!\n", userOne->getUserID());
+            std::clog << std::format("User {} has {} unstarted tasks\n",
+                userOne->getUserID(), activeTasks.size());
+            for (auto task: activeTasks)
+            {
+                std::clog << *task << "\n";
+            }
+        }
+        return TESTPASSED; 
+    }
+
+    std::cerr << std::format("taskDBInterface.getUnstartedDueForStartForAssignedUser({}) FAILED!\n", userOne->getUserID()) <<
+        taskDBInteface.getAllErrorMessages() << "\n";
+
+    return TESTFAILED;
+}
+
+TestDBInterfaceCore::TestStatus TestTaskDBInterface::testTaskUpdates()
+{
+    TaskModel_shp firstTaskToChange = std::make_shared<TaskModel>();
+    firstTaskToChange->selectByDescriptionAndAssignedUser("Archive BHHS74Reunion website to external SSD", userOne->getUserID());
+    firstTaskToChange->addEffortHours(5.0);
+    firstTaskToChange->markComplete();
+    if (!testTaskUpdate(firstTaskToChange))
+    {
+        return TESTFAILED;
+    }
+
+    if (!testAddDepenedcies())
+    {
+        return TESTFAILED;
+    }
+
+    if (!testGetCompletedList())
+    {
+        return TESTFAILED;
+    }
+
+    return TESTPASSED;
+}
+
+bool TestTaskDBInterface::testTaskUpdate(TaskModel_shp changedTask)
+{
+    bool testPassed = true;
+    std::size_t taskID = changedTask->getTaskID();
+    TaskModel_shp original = std::make_shared<TaskModel>();
+    original->setTaskID(taskID);
+    original->retrieve();
+
+    if (!changedTask->update())
+    {
+        std::cerr << std::format("taskDBInteface.update({}) failed execution!\n: {}\n",
+            taskID, changedTask->getAllErrorMessages());
+        return false;
+    }
+
+    TaskModel_shp shouldBeDifferent = std::make_shared<TaskModel>();
+    shouldBeDifferent->setTaskID(taskID);
+    shouldBeDifferent->retrieve();
+    if (*original == *shouldBeDifferent)
+    {
+        std::clog << std::format("Task update test FAILED for task: {}\n", taskID);
+        testPassed = false;
+    }
+
+    return testPassed;
+}
+
+bool TestTaskDBInterface::testAddDepenedcies()
+{
+    std::string dependentDescription("Install a WordPress Archive Plugin");
+    std::string mostDependentTaskDesc("Log into PHPMyAdmin and save Database to disk");
+    std::vector<std::string> taskDescriptions = {
+        {"Check with GoDaddy about providing service to archive website to external SSD"},
+        dependentDescription,
+        {"Have GoDaddy install PHPMyAdmin"},
+        {"Run Archive Plugin"}
+    };
+
+    // Tests the use of both UserModel & and UserModel_shp 
+    std::size_t user1ID = userOne->getUserID();
+    TaskModel_shp depenedentTask = std::make_shared<TaskModel>();
+    TaskModel_shp depenedsOn = std::make_shared<TaskModel>();
+    depenedsOn->selectByDescriptionAndAssignedUser(taskDescriptions[0], user1ID);
+    depenedentTask->selectByDescriptionAndAssignedUser(taskDescriptions[1], user1ID);
+    depenedentTask->addDependency(depenedsOn);
+    if (!depenedentTask->update())
+    {
+        std::clog << std::format("Update to add depenency to '{}' FAILED\n", taskDescriptions[0]);
+        return false;
+    }
+
+    std::vector<std::size_t> comparison;
+    TaskModel_shp mostDepenedentTask = std::make_shared<TaskModel>();
+    mostDepenedentTask->selectByDescriptionAndAssignedUser(mostDependentTaskDesc, user1ID);
+    for (auto task: taskDescriptions)
+    {
+        TaskModel_shp dependency = std::make_shared<TaskModel>();
+        dependency->selectByDescriptionAndAssignedUser(task, user1ID);
+        comparison.push_back(dependency->getTaskID());
+        mostDepenedentTask->addDependency(dependency);
+    }
+    if (!mostDepenedentTask->update())
+    {
+        std::clog << std::format("Update to add depenency to '{}' FAILED\n", mostDependentTaskDesc);
+        return false;
+    }
+
+    TaskModel_shp testDepenedenciesInDB = std::make_shared<TaskModel>();
+    testDepenedenciesInDB->setTaskID(mostDepenedentTask->getTaskID());
+    testDepenedenciesInDB->retrieve();
+    std::vector<std::size_t> dbValue = testDepenedenciesInDB->getDependencies();
+    if (comparison != dbValue)
+    {
+        std::cerr << "Retrival of task dependencies differ, Test FAILED\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool TestTaskDBInterface::testGetCompletedList()
+{
+    std::size_t user1ID = userOne->getUserID();
+
+    TaskModel_shp parentTask = std::make_shared<TaskModel>();
+    parentTask->selectByDescriptionAndAssignedUser("Archive BHHS74Reunion website to external SSD", user1ID);
+    TaskModel::TaskStatus newStatus = TaskModel::TaskStatus::Complete;
+
+    std::chrono::year_month_day completedDate = parentTask->getCompletionDate();
+
+    if (!completedDate.ok())
+    {
+        std::cerr << "Parent Completion Date Not set\n" << *parentTask << "\n" << "completedDate " << completedDate << "\n";
+        return false;
+    }
+
+    TaskList taskSearch;
+
+    TaskListValues tasksToMarkComplete = taskSearch.getTasksByAssignedIDandParentID(user1ID, parentTask->getTaskID());
+    for (auto task: tasksToMarkComplete)
+    {
+        task->setCompletionDate(completedDate);
+        task->setStatus(newStatus);
+        if (!task->update())
+        {
+            std::cerr << std::format("In testGetCompletedList Task Update Failed: \n{}\n", task->getAllErrorMessages());
+            return false;
+        }
+    }
+
+    std::chrono::year_month_day searchAfter = stringToDate("2025-5-11");
+    TaskListValues completedTasks = taskSearch.getTasksCompletedByAssignedAfterDate(user1ID, searchAfter);
+
+    if (completedTasks.size() != (tasksToMarkComplete.size() + 1))
+    {
+        std::clog << std::format("Test FAILED: completedTasks.size() {} != expected value {}\n",
+            completedTasks.size(), tasksToMarkComplete.size() + 1);
+        return false;
+    }
+
+    return true;;
+}
+
+
+std::chrono::year_month_day TestTaskDBInterface::stringToDate(std::string dateString)
+{
+    std::chrono::year_month_day dateValue = getTodaysDate();
+
+    // First try the ISO standard date.
+    std::istringstream ss(dateString);
+    ss >> std::chrono::parse("%Y-%m-%d", dateValue);
+    if (!ss.fail())
+    {
+        return dateValue;
+    }
+
+    // The ISO standard didn't work, try some local dates
+    std::locale usEnglish("en_US.UTF-8");
+    std::vector<std::string> legalFormats = {
+        {"%B %d, %Y"},
+        {"%m/%d/%Y"},
+        {"%m-%d-%Y"}
+    };
+
+    ss.imbue(usEnglish);
+    for (auto legalFormat: legalFormats)
+    {
+        ss >> std::chrono::parse(legalFormat, dateValue);
+        if (!ss.fail())
+        {
+            return dateValue;
+        }
+    }
+
+    return dateValue;
+}
+
+TestDBInterfaceCore::TestStatus TestTaskDBInterface::testnegativePathNotModified()
+{
+    TaskModel_shp taskNotModified = std::make_shared<TaskModel>();
+    taskNotModified->setTaskID(1);
+    if (!taskNotModified->retrieve())
+    {
+        std::cerr << "Task 1 not found in database!!\n";
+        return TESTFAILED;
+    }
+
+    taskNotModified->setTaskID(0); // Force it to check modified rather than Already in DB.
+    taskNotModified->clearModified();
+    std::vector<std::string> expectedErrors = {"not modified!"};
+    return testInsertionFailureMessages(taskNotModified, expectedErrors);
+}
+
+TestDBInterfaceCore::TestStatus TestTaskDBInterface::testNegativePathAlreadyInDataBase()
+{
+    TaskModel_shp taskAlreadyInDB = std::make_shared<TaskModel>();
+    taskAlreadyInDB->setTaskID(1);
+    if (!taskAlreadyInDB->retrieve())
+    {
+        std::cerr << "Task 1 not found in database!!\n";
+        return TESTFAILED;
+    }
+
+    std::vector<std::string> expectedErrors = {"already in Database"};
+    return testInsertionFailureMessages(taskAlreadyInDB, expectedErrors);
+}
+
+TestDBInterfaceCore::TestStatus TestTaskDBInterface::testMissingReuqiredField(TaskModel taskMissingFields)
+{
+    std::vector<std::string> expectedErrors = {"missing required values!"};
+    return testInsertionFailureMessages(&taskMissingFields, expectedErrors);
+}
+
+TestDBInterfaceCore::TestStatus TestTaskDBInterface::testNegativePathMissingRequiredFields()
+{
+    TaskModel newTask(userOne->getUserID());
+    if (testMissingReuqiredField(newTask) != TESTPASSED)
+    {
+        return TESTFAILED;
+    }
+
+    newTask.setDescription("Test missing required fields: Set Description");
+    if (testMissingReuqiredField(newTask) != TESTPASSED)
+    {
+        return TESTFAILED;
+    }
+
+    newTask.setEstimatedEffort(3);
+    if (testMissingReuqiredField(newTask) != TESTPASSED)
+    {
+        return TESTFAILED;
+    }
+
+    newTask.setCreationDate(getTodaysDateMinus(2));
+    if (testMissingReuqiredField(newTask) != TESTPASSED)
+    {
+        return TESTFAILED;
+    }
+
+    newTask.setScheduledStart(getTodaysDate());
+    if (testMissingReuqiredField(newTask) != TESTPASSED)
+    {
+        return TESTFAILED;
+    }
+
+    newTask.setDueDate(getTodaysDatePlus(2));
+    if (testMissingReuqiredField(newTask) != TESTPASSED)
+    {
+        return TESTFAILED;
+    }
+
+    newTask.setPriorityGroup('A');
+    newTask.setPriority(1);
+    TaskModel_shp newTaskPtr = std::make_shared<TaskModel>(newTask);
+    return insertShouldPass(newTaskPtr);
+}
+
+TestDBInterfaceCore::TestStatus TestTaskDBInterface::testTasksFromDataFile()
+{
+    TestDBInterfaceCore::TestStatus allTestsPassed = TESTPASSED;
+    TaskListValues userTaskTestData = loadTasksFromDataFile();
+
+    for (auto testTask: userTaskTestData)
+    {
+        if (insertShouldPass(testTask) == TESTPASSED)
+        {
+            for (auto test: positiveTestFuncs)
+            {
+                if (!test(testTask))
+                {
+                    allTestsPassed = TESTFAILED;
+                }
+            }
+        }
+    }
+
+    userTaskTestData.clear();
+
+    return allTestsPassed;
+}
+
+TestDBInterfaceCore::TestStatus TestTaskDBInterface::testSharedPointerInteraction()
+{
+    TaskModel_shp newTask = std::make_shared<TaskModel>(userOne->getUserID());
+
+    if (testMissingReuqiredField(*newTask) != TESTPASSED)
+    {
+        return TESTFAILED;
+    }
+
+    newTask->setDescription("Test shared pointer interaction in missing required fields");
+    if (testMissingReuqiredField(*newTask) != TESTPASSED)
+    {
+        return TESTFAILED;
+    }
+
+    newTask->setEstimatedEffort(3);
+    if (testMissingReuqiredField(*newTask) != TESTPASSED)
+    {
+        return TESTFAILED;
+    }
+
+    newTask->setCreationDate(getTodaysDateMinus(2));
+    if (testMissingReuqiredField(*newTask) != TESTPASSED)
+    {
+        return TESTFAILED;
+    }
+
+    newTask->setScheduledStart(getTodaysDate());
+    if (testMissingReuqiredField(*newTask) != TESTPASSED)
+    {
+        return TESTFAILED;
+    }
+
+    newTask->setDueDate(getTodaysDatePlus(2));
+    if (testMissingReuqiredField(*newTask) != TESTPASSED)
+    {
+        return TESTFAILED;
+    }
+
+    newTask->setPriorityGroup('A');
+    newTask->setPriority(1);
+    return insertShouldPass(newTask);
+}
+
+TestDBInterfaceCore::TestStatus TestTaskDBInterface::insertShouldPass(TaskModel_shp newTask)
+{
+    if (newTask->insert())
+    {
+        return TESTPASSED;
+    }
+    else
+    {
+        std::cerr << newTask->getAllErrorMessages() << newTask << "\n";
+        std::clog << "Primary key for task: " << newTask->getTaskID() << ", " << newTask->getDescription() <<
+        " not set!\n";
+        if (verboseOutput)
+        {
+            std::clog << newTask << "\n\n";
+        }
+        return TESTFAILED;
+    }
+}
+```
+
+## TestUserDBInterface.h
+
+```c++
+#ifndef TESTUSERDBINTERFACE_H_
+#define TESTUSERDBINTERFACE_H_
+
+#include <functional>
+#include <string>
+#include "TestDBInterfaceCore.h"
+#include "UserList.h"
+#include "UserModel.h"
+#include <vector>
+
+class TestUserDBInterface : public TestDBInterfaceCore
+{
+public:
+    TestUserDBInterface(std::string userFileName);
+    ~TestUserDBInterface() = default;
+    virtual TestDBInterfaceCore::TestStatus runPositivePathTests() override;
+
+private:
+    bool testGetUserByLoginName(UserModel_shp insertedUser);
+    bool testGetUserByLoginAndPassword(UserModel_shp insertedUser);
+    bool testGetUserByFullName(UserModel_shp insertedUser);
+    bool testUpdateUserPassword(UserModel_shp insertedUser);
+    bool loadTestUsersFromFile(UserListValues& userProfileTestData);
+    bool testGetAllUsers(UserListValues userProfileTestData);
+    TestDBInterfaceCore::TestStatus negativePathMissingRequiredFields();
+    void addFirstUser(UserListValues& TestUsers);
+    TestDBInterfaceCore::TestStatus testnegativePathNotModified();
+    TestDBInterfaceCore::TestStatus testNegativePathAlreadyInDataBase();
+
+    std::string dataFileName;
+    bool verboseOutput;
+    std::vector<std::function<bool(UserModel_shp)>>positiveTestFuncs;
+    std::vector<std::function<bool(void)>> negativePathTestFuncs;
+};
+
+#endif // TESTUSERDBINTERFACE_H_
+```
+
+## TestUserDBInterface.cpp  
+
+```c++
+#include "CommandLineParser.h"
+#include "commonUtilities.h"
+#include "CSVReader.h"
+#include <exception>
+#include <functional>
+#include <iostream>
+#include <stdexcept>
+#include <string>
+#include "TestUserDBInterface.h"
+#include "UserList.h"
+#include "UserModel.h"
+#include <vector>
+
+TestUserDBInterface::TestUserDBInterface(std::string userFileName)
+: TestDBInterfaceCore(programOptions.verboseOutput, "user")
+{
+    dataFileName = userFileName;
+    
+    positiveTestFuncs.push_back(std::bind(&TestUserDBInterface::testGetUserByLoginName, this, std::placeholders::_1));
+    positiveTestFuncs.push_back(std::bind(&TestUserDBInterface::testGetUserByLoginAndPassword, this, std::placeholders::_1));
+    positiveTestFuncs.push_back(std::bind(&TestUserDBInterface::testGetUserByFullName, this, std::placeholders::_1));
+    positiveTestFuncs.push_back(std::bind(&TestUserDBInterface::testUpdateUserPassword, this, std::placeholders::_1));
+
+    negativePathTestFuncsNoArgs.push_back(std::bind(&TestUserDBInterface::negativePathMissingRequiredFields, this));
+    negativePathTestFuncsNoArgs.push_back(std::bind(&TestUserDBInterface::testnegativePathNotModified, this));
+    negativePathTestFuncsNoArgs.push_back(std::bind(&TestUserDBInterface::testNegativePathAlreadyInDataBase, this));
+}
+
+TestDBInterfaceCore::TestStatus TestUserDBInterface::runPositivePathTests()
+{
+    UserListValues userProfileTestData;
+    addFirstUser(userProfileTestData);
+
+    if (!loadTestUsersFromFile(userProfileTestData))
+    {
+        return TESTFAILED;
+    }
+
+
+    bool allTestsPassed = true;
+
+    for (auto user: userProfileTestData)
+    {
+        user->insert();
+        if (user->isInDataBase())
+        {
+            for (auto test: positiveTestFuncs)
+            {
+                if (!test(user))
+                {
+                    allTestsPassed = false;
+                }
+            }
+        }
+        else
+        {
+            std::clog << "Primary key for user: " << user->getLastName() << ", " << user->getFirstName() << " not set!\n";
+            std::clog << user->getAllErrorMessages() << "\n";
+            if (verboseOutput)
+            {
+                std::clog << *user << "\n\n";
+            }
+            allTestsPassed = false;
+        }
+    }
+
+    if (allTestsPassed)
+    {
+        allTestsPassed = testGetAllUsers(userProfileTestData);
+    }
+
+    userProfileTestData.clear();
+
+    reportTestStatus(allTestsPassed? TESTPASSED : TESTFAILED, "positive");
+    return allTestsPassed? TESTPASSED : TESTFAILED;
+}
+
+bool TestUserDBInterface::testGetUserByLoginName(UserModel_shp insertedUser)
+{
+    UserModel_shp retrievedUser = std::make_shared<UserModel>();
+    if (retrievedUser->selectByLoginName(insertedUser->getLoginName()))
+    {
+        if (*retrievedUser == *insertedUser)
+        {
+            return true;
+        }
+        else
+        {
+            std::cerr << "Insertion user and retrieved User are not the same. Test FAILED!\nInserted User:\n" <<
+            *insertedUser << "\n" "Retreived User:\n" << *retrievedUser << "\n";
+            return false;
+        }
+    }
+    else
+    {
+        std::cerr << "userDBInterface.getUserByLogin(user->getLoginName()) FAILED!\n" <<
+            retrievedUser->getAllErrorMessages() << "\n";
+        return false;
+    }
+}
+
+bool TestUserDBInterface::testGetUserByLoginAndPassword(UserModel_shp insertedUser)
+{
+    std::string_view testName = insertedUser->getLoginName();
+    std::string_view testPassword = insertedUser->getPassword();
+
+    UserModel_shp retrievedUser = std::make_shared<UserModel>();
+    if (retrievedUser->selectByLoginAndPassword(testName, testPassword))
+    {
+        if (*retrievedUser != *insertedUser)
+        {
+            std::cerr << "Insertion user and retrieved User are not the same. Test FAILED!\nInserted User:\n" <<
+            *insertedUser << "\n" "Retreived User:\n" << *retrievedUser << "\n";
+            return false;
+        }
+    }
+    else
+    {
+        std::cerr << "userDBInterface.getUserByLogin(user->getLoginName()) FAILED!\n" <<
+            retrievedUser->getAllErrorMessages() << "\n";
+        return false;
+    }
+
+
+    if (retrievedUser->selectByLoginAndPassword(testName, "NotThePassword"))
+    {
+        std::cerr << "retrievedUser->selectByLoginAndPassword(user->getLoginName()) Found user with fake password!\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool TestUserDBInterface::testGetUserByFullName(UserModel_shp insertedUser)
+{
+    UserModel_shp retrievedUser = std::make_shared<UserModel>();
+    if (retrievedUser->selectByFullName(insertedUser->getLastName(), insertedUser->getFirstName(),
+        insertedUser->getMiddleInitial()))
+    {
+        if (*retrievedUser == *insertedUser)
+        {
+            return true;
+        }
+        else
+        {
+            std::cerr << "Insertion user and retrieved User are not the same. Test FAILED!\nInserted User:\n" <<
+            *insertedUser << "\n" "Retreived User:\n" << *retrievedUser << "\n";
+            return false;
+        }
+    }
+    else
+    {
+        std::cerr << "retrievedUser->selectByFullName FAILED!\n" <<
+            retrievedUser->getAllErrorMessages() << "\n";
+        return false;
+    }
+}
+
+bool TestUserDBInterface::testUpdateUserPassword(UserModel_shp insertedUser)
+{
+    bool testPassed = true;
+    UserModel oldUserValues = *insertedUser;
+    std::string newPassword = "MyNew**&pAs5Word" + std::to_string(oldUserValues.getUserID());
+
+    insertedUser->setPassword(newPassword);
+    if (!insertedUser->save())
+    {
+        std::cerr << "insertedUser->save()() FAILED" << insertedUser->getAllErrorMessages() << "\n";
+        return false;
+    }
+
+    UserModel_shp newUserValues = std::make_shared<UserModel>();
+    newUserValues->setUserID(insertedUser->getUserID());
+    newUserValues->retrieve();
+    if (oldUserValues == *newUserValues)
+    {
+        std::clog << std::format("Password update for user {} FAILED!\n", oldUserValues.getUserID());
+        testPassed = false;
+    }
+
+    return testPassed;
+}
+
+bool TestUserDBInterface::loadTestUsersFromFile(UserListValues& userProfileTestData)
+{
+    std::ifstream userData(dataFileName);
+
+    if (!userData.is_open())
+    {
+        std::cerr << "Can't open \"" << dataFileName << "\" for input!" << std::endl;
+        return false;
+    }
+    
+    for (auto row: CSVRange(userData))
+    {
+        UserModel_shp userIn = std::make_shared<UserModel>(UserModel());
+        userIn->setLastName(row[0]);
+        userIn->setFirstName(row[1]);
+        userIn->setMiddleInitial(row[2]);
+        userIn->setEmail(row[3]);
+        userIn->setCreationDate(getTodaysDate());
+        userIn->autoGenerateLoginAndPassword();
+        userProfileTestData.push_back(userIn);
+    }
+
+    if (userData.bad())
+    {
+        std::cerr << "Fatal error with file stream: \"" << dataFileName << "\"" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool TestUserDBInterface::testGetAllUsers(UserListValues userProfileTestData)
+{
+    bool testPassed = false;
+    UserList testULists;
+    UserListValues allUsers = testULists.getAllUsers();
+
+    if ((userProfileTestData.size() == allUsers.size()) &&
+        std::equal(userProfileTestData.begin(), userProfileTestData.end(), allUsers.begin(),
+            [](const UserModel_shp a, const UserModel_shp b) { return *a == *b; }))
+    {
+        testPassed = true;
+    }
+    else
+    {
+        std::clog << "Get All users FAILED! " << allUsers.size() << "\n";
+        if (userProfileTestData.size() != allUsers.size())
+        {
+            std::clog << std::format("Size differs: userProfileTestData.size({}) != llUsers.size({})",
+                userProfileTestData.size(), allUsers.size());
+        }
+        else
+        {
+            for (std::size_t userLisetIdx = 0; userLisetIdx < userProfileTestData.size(); ++userLisetIdx)
+            {
+                if (*userProfileTestData[userLisetIdx] != *allUsers[userLisetIdx])
+                {
+                    std::clog << std::format("Original Data [{}]", userLisetIdx) << "\n" <<
+                        *userProfileTestData[userLisetIdx] << std::format("Database Data [{}]", userLisetIdx) << 
+                        "\n" << *allUsers[userLisetIdx] << "\n";
+                }
+            }
+        }
+    }
+
+    allUsers.clear();
+
+    return testPassed;
+}
+
+TestDBInterfaceCore::TestStatus TestUserDBInterface::negativePathMissingRequiredFields()
+{
+    std::vector<std::string> expectedErrors =
+    {
+        "Last Name", "First Name", "Login Name", "Password", "Date Added", "User is missing required values"
+    };
+
+    UserModel newuser;
+    newuser.setUserID(0);   // Force a modification so that missing fields can be tested.
+
+    std::vector<std::function<void(std::string)>> fieldSettings = 
+    {
+        std::bind(&UserModel::setLastName, &newuser, std::placeholders::_1),
+        std::bind(&UserModel::setFirstName, &newuser, std::placeholders::_1),
+        std::bind(&UserModel::setLoginName, &newuser, std::placeholders::_1),
+        std::bind(&UserModel::setPassword, &newuser, std::placeholders::_1)
+    };
+
+    for (auto setField: fieldSettings)
+    {
+        if (testInsertionFailureMessages(&newuser, expectedErrors) != TESTPASSED)
+        {
+            return TESTFAILED;
+        }
+        expectedErrors.erase(expectedErrors.begin());
+        setField("teststringvalue");
+    }
+
+    expectedErrors.clear();
+
+    newuser.setCreationDate(getTodaysDate());
+
+    newuser.save();
+    if (!newuser.isInDataBase())
+    {
+        std::cerr << newuser.getAllErrorMessages() << newuser << "\n";
+        std::clog << "Primary key for user: " << newuser.getUserID() << " not set!\n";
+        if (verboseOutput)
+        {
+            std::clog << newuser << "\n\n";
+        }
+        return TESTFAILED;
+    }
+
+    return TESTPASSED;
+}
+
+void TestUserDBInterface::addFirstUser(UserListValues& TestUsers)
+{
+    // Test one case of the alternate constructor.
+    UserModel_shp firstUser = std::make_shared<UserModel>("PacMan", "IN", "BW", "pacmaninbw@gmail.com");
+    firstUser->autoGenerateLoginAndPassword();
+    TestUsers.push_back(firstUser);
+}
+
+TestDBInterfaceCore::TestStatus TestUserDBInterface::testnegativePathNotModified()
+{
+    UserModel_shp userNotModified = std::make_shared<UserModel>();
+    userNotModified->setUserID(1);
+    if (!userNotModified->retrieve())
+    {
+        std::cerr << "User 1 not found in database!!\n" << userNotModified->getAllErrorMessages() << "\n";
+        return TESTFAILED;
+    }
+
+    userNotModified->setUserID(0); // Force it to check modified rather than Already in DB.
+    userNotModified->clearModified();
+    std::vector<std::string> expectedErrors = {"not modified!"};
+    return testInsertionFailureMessages(userNotModified, expectedErrors);
+}
+
+TestDBInterfaceCore::TestStatus TestUserDBInterface::testNegativePathAlreadyInDataBase()
+{
+    UserModel_shp userAlreadyInDB = std::make_shared<UserModel>();
+    userAlreadyInDB->setUserID(1);
+    if (!userAlreadyInDB->retrieve())
+    {
+        std::cerr << "User 1 not found in database!!\n" << userAlreadyInDB->getAllErrorMessages() << "\n";
+        return TESTFAILED;
+    }
+
+    std::vector<std::string> expectedErrors = {"already in Database"};
+    return testInsertionFailureMessages(userAlreadyInDB, expectedErrors);
+}
+```
+
+## main.cpp 
+
+```c++
+#include "CommandLineParser.h"
+#include <exception>
+#include <iostream>
+#include <stdexcept>
+#include "TestTaskDBInterface.h"
+#include "TestUserDBInterface.h"
+#include "UtilityTimer.h"
+
+/*
+ * All of the DBInterface classes need access to the programOptions global variable for the
+ * MySQL user name and password, as well as the database name and other connection details.
+ */
+ProgramOptions programOptions;
+
+int main(int argc, char* argv[])
+{
+    try {
+		if (const auto progOptions = parseCommandLine(argc, argv); progOptions.has_value())
+		{
+			programOptions = *progOptions;
+            UtilityTimer stopWatch;
+            TestUserDBInterface userTests(programOptions.userTestDataFile);
+
+            if (userTests.runAllTests() == TestDBInterfaceCore::TestStatus::TestPassed)
+            {
+                TestTaskDBInterface tasktests(programOptions.taskTestDataFile);
+                if (tasktests.runAllTests() != TestDBInterfaceCore::TestStatus::TestPassed)
+                {
+                    return EXIT_FAILURE;
+                }
+            }
+            else
+            {
+                return EXIT_FAILURE;
+            }
+            std::clog << "All tests Passed\n";
+			if (programOptions.enableExecutionTime)
+			{
+                stopWatch.stopTimerAndReport("Testing of Insertion and retrieval of users and tasks in MySQL database\n");
+			}
+        }
+        else
+		{
+			if (progOptions.error() != CommandLineStatus::HelpRequested)
+			{
+				return EXIT_FAILURE;
+			}
+		}
+    } catch (const std::exception& err) {
+        std::cerr << "Error: " << err.what() << "\n";
+        return EXIT_FAILURE;
+    }
+
+    return EXIT_SUCCESS;
+}
+```
+
